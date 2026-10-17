@@ -28,9 +28,14 @@ Trois rôles sont gérés avec des permissions distinctes : **Utilisateur**, **R
 - Connexion / déconnexion
 - Sessions JWT signées, cookie `HttpOnly`
 - Trois rôles : `USER`, `RESPONSIBLE`, `ADMIN`
-- Contrôle d'accès **côté serveur** via `requireAuth()` et `requireRole()`
-- Pages protégées : `/dashboard`, `/responsible`, `/admin`
+- Contrôle d'accès **côté serveur** à trois niveaux :
+  - Middleware d'edge (`src/middleware.ts`)
+  - Helpers `requireAuth()` / `requireRole()` dans les pages
+  - Vérifications dans les routes API
+- Pages protégées : `/dashboard`, `/profile`, `/responsible`, `/admin`
 - Page `/unauthorized` pour les accès refusés
+- **Gestion du profil** : modification du nom et de l'email (le rôle est en lecture seule)
+- **Rafraîchissement du JWT** après modification du profil (les données mises à jour apparaissent immédiatement)
 - Script de seed avec 3 comptes de démonstration
 
 ### Modules à venir
@@ -142,15 +147,30 @@ Après avoir exécuté `npm run db:seed`, trois comptes sont disponibles :
 
 | Rôle | Email | Mot de passe | Accès |
 |---|---|---|---|
-| Utilisateur | `user@demo.com` | `password123` | Dashboard |
-| Responsable | `responsible@demo.com` | `password123` | Dashboard + Responsable |
+| Utilisateur | `user@demo.com` | `password123` | Dashboard + Profile |
+| Responsable | `responsible@demo.com` | `password123` | Dashboard + Profile + Responsable |
 | Administrateur | `admin@demo.com` | `password123` | Toutes les pages |
 
 ## 🔐 Sécurité et contrôle d'accès
 
-### Côté serveur uniquement
+### Trois niveaux de protection
 
-Toutes les vérifications de permissions sont effectuées **côté serveur**, jamais uniquement dans l'interface :
+LocalImpact applique les permissions à **trois niveaux** (défense en profondeur) :
+
+**1. Middleware d'edge** — `src/middleware.ts`
+
+Exécuté avant le rendu de la page. Bloque immédiatement les requêtes non autorisées, sans consommer de ressources côté serveur.
+
+```typescript
+// Extrait de src/middleware.ts
+if (path.startsWith("/admin") && token?.role !== "ADMIN") {
+  return NextResponse.redirect(new URL("/unauthorized", req.url));
+}
+```
+
+**2. Helpers de page** — `src/lib/auth.ts`
+
+Utilisés dans chaque page protégée pour valider la session et le rôle.
 
 ```typescript
 import { requireAuth, requireRole } from "@/lib/auth";
@@ -162,26 +182,9 @@ const session = await requireAuth();
 const session = await requireRole(["ADMIN"]);
 ```
 
-### Matrice de permissions
+**3. Vérifications dans les API routes**
 
-| Route | Guest | USER | RESPONSIBLE | ADMIN |
-|---|---|---|---|---|
-| `/` | ✅ | ✅ | ✅ | ✅ |
-| `/login`, `/register` | ✅ | ✅ | ✅ | ✅ |
-| `/dashboard` | ❌ → `/login` | ✅ | ✅ | ✅ |
-| `/responsible` | ❌ → `/login` | ❌ → `/unauthorized` | ✅ | ✅ |
-| `/admin` | ❌ → `/login` | ❌ → `/unauthorized` | ❌ → `/unauthorized` | ✅ |
-
-### Sécurité des sessions
-
-- Mots de passe hachés avec **bcrypt** (10 rounds)
-- Sessions JWT signées avec `NEXTAUTH_SECRET`
-- Cookie `HttpOnly` (protection XSS)
-- Cookie `SameSite=Lax` (protection CSRF)
-
-### Vérifications côté API
-
-Toute route API sensible doit appeler :
+Toute route API sensible vérifie la session avant d'agir.
 
 ```typescript
 import { getServerSession } from "next-auth";
@@ -192,6 +195,29 @@ if (!session) {
   return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 }
 ```
+
+### Matrice de permissions
+
+| Route | Guest | USER | RESPONSIBLE | ADMIN |
+|---|---|---|---|---|
+| `/` | ✅ | ✅ | ✅ | ✅ |
+| `/login`, `/register` | ✅ | ✅ | ✅ | ✅ |
+| `/dashboard` | ❌ → `/login` | ✅ | ✅ | ✅ |
+| `/profile` | ❌ → `/login` | ✅ | ✅ | ✅ |
+| `/responsible` | ❌ → `/login` | ❌ → `/unauthorized` | ✅ | ✅ |
+| `/admin` | ❌ → `/login` | ❌ → `/unauthorized` | ❌ → `/unauthorized` | ✅ |
+
+### Sécurité des sessions
+
+- Mots de passe hachés avec **bcrypt** (10 rounds)
+- Sessions JWT signées avec `NEXTAUTH_SECRET`
+- Cookie `HttpOnly` (protection XSS)
+- Cookie `SameSite=Lax` (protection CSRF)
+- Rafraîchissement du JWT après modification du profil via `useSession().update()`
+
+### Gestion du profil
+
+Le endpoint `PATCH /api/profile` permet à un utilisateur connecté de modifier son **nom** et son **email**. Le **rôle est ignoré côté serveur** — même si un client malveillant l'envoie dans le corps de la requête, il est rejeté. Cela empêche toute auto-promotion.
 
 ## 📜 Scripts disponibles
 
@@ -214,13 +240,16 @@ localimpact/
 │   ├── seed.ts                 # Comptes de démonstration
 │   └── migrations/             # Historique des migrations
 ├── src/
+│   ├── middleware.ts           # Protection des routes (edge)
 │   ├── app/
 │   │   ├── api/
 │   │   │   ├── auth/[...nextauth]/route.ts   # Config NextAuth
-│   │   │   └── register/route.ts             # API inscription
+│   │   │   ├── register/route.ts             # API inscription
+│   │   │   └── profile/route.ts              # API mise à jour du profil
 │   │   ├── admin/page.tsx                    # Zone admin (ADMIN)
 │   │   ├── dashboard/page.tsx                # Tableau de bord
 │   │   ├── login/page.tsx                    # Connexion
+│   │   ├── profile/page.tsx                  # Profil utilisateur
 │   │   ├── register/page.tsx                 # Inscription
 │   │   ├── responsible/page.tsx              # Zone responsable
 │   │   ├── unauthorized/page.tsx             # Accès refusé
@@ -228,7 +257,8 @@ localimpact/
 │   │   ├── providers.tsx                     # SessionProvider
 │   │   └── page.tsx
 │   ├── components/
-│   │   └── LogoutButton.tsx
+│   │   ├── LogoutButton.tsx
+│   │   └── ProfileForm.tsx                   # Formulaire de profil
 │   ├── lib/
 │   │   ├── auth.ts             # Helpers requireAuth / requireRole
 │   │   └── prisma.ts           # Client Prisma singleton
@@ -249,7 +279,7 @@ localimpact/
 
 1. Se déconnecter via [http://localhost:3000/api/auth/signout](http://localhost:3000/api/auth/signout)
 2. Se connecter avec un compte
-3. Tester les URLs `/admin`, `/responsible`, `/dashboard`
+3. Tester les URLs `/admin`, `/responsible`, `/dashboard`, `/profile`
 
 ### Test serveur via curl
 
@@ -268,27 +298,27 @@ curl -b cookies.txt -s http://localhost:3000/api/auth/session
 
 # 4. Tester les permissions
 curl -b cookies.txt -s -o NUL -w "%{http_code}\n" http://localhost:3000/admin
-# → 307 (bloqué, redirige vers /unauthorized)
+# → 307 (bloqué par le middleware, redirige vers /unauthorized)
 curl -b cookies.txt -s -o NUL -w "%{http_code}\n" http://localhost:3000/dashboard
 # → 200 (autorisé)
 ```
 
 ### Résultats attendus par rôle
 
-| Rôle | `/admin` | `/responsible` | `/dashboard` |
-|---|---|---|---|
-| Guest | 307 → /login | 307 → /login | 307 → /login |
-| USER | 307 → /unauthorized | 307 → /unauthorized | 200 ✅ |
-| RESPONSIBLE | 307 → /unauthorized | 200 ✅ | 200 ✅ |
-| ADMIN | 200 ✅ | 200 ✅ | 200 ✅ |
+| Rôle | `/admin` | `/responsible` | `/dashboard` | `/profile` |
+|---|---|---|---|---|
+| Guest | 307 → /login | 307 → /login | 307 → /login | 307 → /login |
+| USER | 307 → /unauthorized | 307 → /unauthorized | 200 ✅ | 200 ✅ |
+| RESPONSIBLE | 307 → /unauthorized | 200 ✅ | 200 ✅ | 200 ✅ |
+| ADMIN | 200 ✅ | 200 ✅ | 200 ✅ | 200 ✅ |
 
 ## ⚠️ Limites connues
 
-- Le register crée uniquement des comptes `USER` (les autres rôles sont créés via le seed ou par un admin).
+- Le register crée uniquement des comptes `USER` (les autres rôles sont créés via le seed).
 - Pas de fonctionnalité « mot de passe oublié ».
 - Pas d'authentification par OAuth (Google, GitHub).
 - Pas de vérification d'email à l'inscription.
-- Le middleware Next.js n'est pas activé (protection uniquement via `requireRole` dans les pages).
+- Pas de page d'administration pour gérer les utilisateurs (changement de rôle).
 - Les autres modules (signalements, commentaires, dashboard statistiques) sont en cours de développement.
 
 ## 🐛 Dépannage
@@ -301,13 +331,14 @@ curl -b cookies.txt -s -o NUL -w "%{http_code}\n" http://localhost:3000/dashboar
 | `Module not found: Can't resolve 'next-auth/react'` | `npm install next-auth@4 --legacy-peer-deps` |
 | `Route segment config "dynamic" is not compatible` | Retirer `cacheComponents` de `next.config.ts` |
 | `@theme` warning dans le CSS | Vérifier que `postcss.config.mjs` utilise `@tailwindcss/postcss` |
+| Le nom ne change pas après modification du profil | Le JWT est rafraîchi via `useSession().update()` dans `ProfileForm.tsx` |
 | `EACCES` ou erreurs de permission | Éviter OneDrive / dossiers synchronisés, préférer `C:\dev\` |
 
 ## 🤝 Contribution
 
 Répartition du travail :
 
-- **Membre 1** : Authentification, rôles, permissions, seed
+- **Membre 1** : Authentification, rôles, permissions, profil, seed, middleware
 - **Membre 2** : Signalements (CRUD, filtres, soutien)
 - **Membre 3** : Workflow (statuts, historique, commentaires)
 - **Membre 4** : Dashboard statistiques + fonctionnalité originale

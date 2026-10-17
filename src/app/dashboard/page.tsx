@@ -25,6 +25,14 @@ export default async function DashboardPage() {
         <p><strong>Role:</strong> {role}</p>
       </div>
 
+      {/* 👇 NEW: Profile link — visible to every logged-in user */}
+      <Link
+        href="/profile"
+        className="block bg-blue-600 text-white p-3 rounded mb-3 hover:bg-blue-700"
+      >
+        My Profile →
+      </Link>
+
       {role === "ADMIN" && (
         <Link
           href="/admin"
